@@ -696,6 +696,15 @@ int MoonshineStreamingModel::encode(MoonshineStreamingState *state,
     return 0;
 }
 
+std::future<int> MoonshineStreamingModel::encode_async(MoonshineStreamingState *state,
+                                                        bool is_final,
+                                                        int *new_frames_out) {
+    // Launch encoding asynchronously and return a future
+    return std::async(std::launch::async, [this, state, is_final, new_frames_out]() {
+        return this->encode(state, is_final, new_frames_out);
+    });
+}
+
 /* ============================================================================
  * Internal decoder helper - runs decoder with multiple tokens
  * ============================================================================ */

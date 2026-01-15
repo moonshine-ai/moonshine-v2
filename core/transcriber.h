@@ -158,6 +158,13 @@ private:
   // Transcribe a single segment using the streaming model
   std::string *transcribe_segment_with_streaming_model(const float *audio_data,
                                                        size_t audio_length);
+  
+  // Encode audio segment into a streaming state (can be called async)
+  MoonshineStreamingState encode_audio_segment(const float *audio_data,
+                                               size_t audio_length);
+  
+  // Decode an encoded state to get transcription text
+  std::string *decode_streaming_state(MoonshineStreamingState &state);
 };
 
 #endif

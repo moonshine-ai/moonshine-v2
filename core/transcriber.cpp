@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <filesystem>
+#include <future>
 #include <string>
 
 #include "debug-utils.h"
@@ -382,22 +383,83 @@ void Transcriber::update_transcript_from_segments(
     const std::vector<VoiceActivitySegment> &segments,
     TranscriberStream *stream, struct transcript_t **out_transcript) {
   stream->transcript_output->clear_update_flags();
-  for (size_t segment_index = 0; segment_index < segments.size();
-       segment_index++) {
-    const VoiceActivitySegment &segment = segments[segment_index];
-    if (!segment.just_updated) {
-      continue;
+  
+  // For streaming model, use pipelined encoding/decoding
+  if (is_streaming_model_arch(this->options.model_arch) &&
+      this->streaming_model != nullptr) {
+    
+    // Collect indices of segments that need updating
+    std::vector<size_t> updated_indices;
+    for (size_t i = 0; i < segments.size(); i++) {
+      if (segments[i].just_updated) {
+        updated_indices.push_back(i);
+      }
     }
-    TranscriberLine line;
-    line.start_time = segment.start_time;
-    line.duration = segment.end_time - segment.start_time;
-    line.is_complete = segment.is_complete;
-    line.just_updated = segment.just_updated;
-    if (segment_index >= stream->transcript_output->ordered_internal_line_ids.size()) {
-      uint64_t new_segment_id = this->next_line_id.fetch_add(1);
-      stream->transcript_output->ordered_internal_line_ids.push_back(new_segment_id);
+    
+    if (!updated_indices.empty()) {
+      // Start encoding the first segment asynchronously
+      std::future<MoonshineStreamingState> encode_future = std::async(
+          std::launch::async,
+          [this, &segments, &updated_indices]() {
+            return encode_audio_segment(
+                segments[updated_indices[0]].audio_data.data(),
+                segments[updated_indices[0]].audio_data.size());
+          });
+      
+      // Process segments with pipelined encode/decode
+      for (size_t i = 0; i < updated_indices.size(); i++) {
+        size_t segment_index = updated_indices[i];
+        const VoiceActivitySegment &segment = segments[segment_index];
+        
+        // Wait for encoding of current segment to complete
+        MoonshineStreamingState state = encode_future.get();
+        
+        // Start encoding next segment in parallel while we decode this one
+        if (i + 1 < updated_indices.size()) {
+          size_t next_i = i + 1;
+          encode_future = std::async(
+              std::launch::async,
+              [this, &segments, &updated_indices, next_i]() {
+                return encode_audio_segment(
+                    segments[updated_indices[next_i]].audio_data.data(),
+                    segments[updated_indices[next_i]].audio_data.size());
+              });
+        }
+        
+        // Decode current segment (happens in parallel with encoding of next)
+        TranscriberLine line;
+        line.start_time = segment.start_time;
+        line.duration = segment.end_time - segment.start_time;
+        line.is_complete = segment.is_complete;
+        line.just_updated = segment.just_updated;
+        if (segment_index >= stream->transcript_output->ordered_internal_line_ids.size()) {
+          uint64_t new_segment_id = this->next_line_id.fetch_add(1);
+          stream->transcript_output->ordered_internal_line_ids.push_back(new_segment_id);
+        }
+        line.id = stream->transcript_output->ordered_internal_line_ids.at(segment_index);
+        line.text = decode_streaming_state(state);
+        line.audio_data = segment.audio_data;
+        stream->transcript_output->add_or_update_line(line);
+      }
     }
-    line.id = stream->transcript_output->ordered_internal_line_ids.at(segment_index);
+  } else {
+    // Non-streaming model: process segments sequentially
+    for (size_t segment_index = 0; segment_index < segments.size();
+         segment_index++) {
+      const VoiceActivitySegment &segment = segments[segment_index];
+      if (!segment.just_updated) {
+        continue;
+      }
+      TranscriberLine line;
+      line.start_time = segment.start_time;
+      line.duration = segment.end_time - segment.start_time;
+      line.is_complete = segment.is_complete;
+      line.just_updated = segment.just_updated;
+      if (segment_index >= stream->transcript_output->ordered_internal_line_ids.size()) {
+        uint64_t new_segment_id = this->next_line_id.fetch_add(1);
+        stream->transcript_output->ordered_internal_line_ids.push_back(new_segment_id);
+      }
+      line.id = stream->transcript_output->ordered_internal_line_ids.at(segment_index);
 
     std::chrono::steady_clock::time_point start_time = std::chrono::steady_clock::now();
     // Transcribe the segment using the appropriate model
@@ -436,49 +498,51 @@ void Transcriber::update_transcript_from_segments(
   *out_transcript = &(stream->transcript_output->transcript);
 }
 
-std::string *
-Transcriber::transcribe_segment_with_streaming_model(const float *audio_data,
-                                                     size_t audio_length) {
-  if (audio_length == 0 || this->streaming_model == nullptr) {
-    return new std::string();
-  }
-
+MoonshineStreamingState
+Transcriber::encode_audio_segment(const float *audio_data, size_t audio_length) {
   const MoonshineStreamingConfig &config = this->streaming_model->config;
-
-  // Create a temporary state for this segment transcription
+  
   MoonshineStreamingState state;
   state.reset(config);
+  
+  if (audio_length == 0) {
+    return state;
+  }
 
   // Process audio in chunks through the streaming model's frontend
   const int chunk_size = 1280; // 80ms at 16kHz
-  {
-    std::lock_guard<std::mutex> lock(this->streaming_model_mutex);
 
-    for (size_t offset = 0; offset < audio_length; offset += chunk_size) {
-      int len = static_cast<int>(
-          std::min(static_cast<size_t>(chunk_size), audio_length - offset));
-      int err = this->streaming_model->process_audio_chunk(
-          &state, audio_data + offset, len, nullptr);
-      if (err != 0) {
-        LOGF("Failed to process audio chunk: %d", err);
-        throw std::runtime_error("Failed to process audio chunk: " +
-                                 std::to_string(err));
-      }
-    }
-
-    // Run encoder (final - this is the complete segment)
-    int new_frames = 0;
-    int err = this->streaming_model->encode(&state, true, &new_frames);
+  for (size_t offset = 0; offset < audio_length; offset += chunk_size) {
+    int len = static_cast<int>(
+        std::min(static_cast<size_t>(chunk_size), audio_length - offset));
+    int err = this->streaming_model->process_audio_chunk(
+        &state, audio_data + offset, len, nullptr);
     if (err != 0) {
-      LOGF("Failed to encode: %d", err);
-      throw std::runtime_error("Failed to encode: " + std::to_string(err));
+      LOGF("Failed to process audio chunk: %d", err);
+      throw std::runtime_error("Failed to process audio chunk: " +
+                               std::to_string(err));
     }
   }
 
+  // Run encoder (final - this is the complete segment)
+  int new_frames = 0;
+  int err = this->streaming_model->encode(&state, true, &new_frames);
+  if (err != 0) {
+    LOGF("Failed to encode: %d", err);
+    throw std::runtime_error("Failed to encode: " + std::to_string(err));
+  }
+  
+  return state;
+}
+
+std::string *
+Transcriber::decode_streaming_state(MoonshineStreamingState &state) {
   // If no memory accumulated, return empty string
   if (state.memory_len == 0) {
     return new std::string();
   }
+
+  const MoonshineStreamingConfig &config = this->streaming_model->config;
 
   // Decode to get transcription
   const int max_tokens = 256;
@@ -488,37 +552,47 @@ Transcriber::transcribe_segment_with_streaming_model(const float *audio_data,
   std::vector<float> logits(config.vocab_size);
   int current_token = config.bos_id;
 
-  {
-    std::lock_guard<std::mutex> lock(this->streaming_model_mutex);
-
-    for (int step = 0; step < max_tokens; ++step) {
-      int err = this->streaming_model->decode_step(&state, current_token,
-                                                   logits.data());
-      if (err != 0) {
-        break;
-      }
-
-      // Argmax
-      int next_token = 0;
-      float max_logit = logits[0];
-      for (int i = 1; i < config.vocab_size; ++i) {
-        if (logits[i] > max_logit) {
-          max_logit = logits[i];
-          next_token = i;
-        }
-      }
-
-      tokens.push_back(next_token);
-      current_token = next_token;
-
-      if (next_token == config.eos_id)
-        break;
+  for (int step = 0; step < max_tokens; ++step) {
+    int err = this->streaming_model->decode_step(&state, current_token,
+                                                 logits.data());
+    if (err != 0) {
+      break;
     }
+
+    // Argmax
+    int next_token = 0;
+    float max_logit = logits[0];
+    for (int i = 1; i < config.vocab_size; ++i) {
+      if (logits[i] > max_logit) {
+        max_logit = logits[i];
+        next_token = i;
+      }
+    }
+
+    tokens.push_back(next_token);
+    current_token = next_token;
+
+    if (next_token == config.eos_id)
+      break;
   }
 
   // Convert tokens to text
   std::string text = this->streaming_model->tokens_to_text(tokens);
   return sanitize_text(text.c_str());
+}
+
+std::string *
+Transcriber::transcribe_segment_with_streaming_model(const float *audio_data,
+                                                     size_t audio_length) {
+  if (audio_length == 0 || this->streaming_model == nullptr) {
+    return new std::string();
+  }
+
+  // Encode the segment
+  MoonshineStreamingState state = encode_audio_segment(audio_data, audio_length);
+  
+  // Decode and return the text
+  return decode_streaming_state(state);
 }
 
 std::string *Transcriber::sanitize_text(const char *text) {

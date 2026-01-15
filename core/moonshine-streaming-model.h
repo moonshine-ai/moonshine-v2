@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <future>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -128,7 +129,13 @@ struct MoonshineStreamingModel {
                             const float *audio_chunk, size_t chunk_len,
                             int *features_out);
     
+    /* Synchronous encode - blocks until complete */
     int encode(MoonshineStreamingState *state, bool is_final, int *new_frames_out);
+    
+    /* Asynchronous encode - returns immediately with a future
+     * The future will contain the error code (0 on success).
+     * new_frames_out will be populated when the future is ready. */
+    std::future<int> encode_async(MoonshineStreamingState *state, bool is_final, int *new_frames_out);
     
     /* Single-token decode step (auto-regressive) */
     int decode_step(MoonshineStreamingState *state, int token, float *logits_out);
