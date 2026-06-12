@@ -30,7 +30,9 @@ elseif(APPLE)
         IMPORTED_LOCATION "${ONNXRUNTIME_LIB_PATH}"
         INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_CURRENT_LIST_DIR}/include/"
     )
-elseif(LINUX)
+# Note: the LINUX variable only exists in CMake >= 3.25, so test
+# CMAKE_SYSTEM_NAME instead to stay compatible with the 3.22 minimum.
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set_target_properties(onnxruntime PROPERTIES
         IMPORTED_LOCATION "${ONNXRUNTIME_LIB_PATH}"
         INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_CURRENT_LIST_DIR}/include/"

@@ -13,7 +13,7 @@ cmake --build .
 
 cd ${REPO_ROOT_DIR}/test-assets
 
-export LD_LIBRARY_PATH=${REPO_ROOT_DIR}/core/third-party/onnxruntime/lib/linux/x86_64
+export LD_LIBRARY_PATH=${REPO_ROOT_DIR}/core/third-party/onnxruntime/lib/linux/$(uname -m)
 
 ${REPO_ROOT_DIR}/core/bin-tokenizer/build/bin-tokenizer-test
 ${REPO_ROOT_DIR}/core/third-party/onnxruntime/build/onnxruntime-test

@@ -16,10 +16,9 @@ cp ${CORE_BUILD_DIR}/libmoonshine.* ${PYTHON_DIR}/src/moonshine_voice/
 
 if [[ "$OSTYPE" == "darwin"* ]]; then
 	cp ${CORE_DIR}/third-party/onnxruntime/lib/macos/arm64/libonnxruntime*.dylib ${PYTHON_DIR}/src/moonshine_voice/
-elif grep -q "Raspberry Pi" /proc/cpuinfo 2>/dev/null || grep -q "BCM2" /proc/cpuinfo 2>/dev/null; then
-	cp ${CORE_DIR}/third-party/onnxruntime/lib/linux/aarch64/libonnxruntime*.so* ${PYTHON_DIR}/src/moonshine_voice/
 elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
-	cp ${CORE_DIR}/third-party/onnxruntime/lib/linux/x86_64/libonnxruntime*.so* ${PYTHON_DIR}/src/moonshine_voice/
+	# Covers x86_64 and any aarch64 device (Raspberry Pi, Jetson, etc).
+	cp ${CORE_DIR}/third-party/onnxruntime/lib/linux/$(uname -m)/libonnxruntime*.so* ${PYTHON_DIR}/src/moonshine_voice/
 elif [[ "$OSTYPE" == "msys"* ]]; then
 	cp ${CORE_DIR}/third-party/onnxruntime/lib/windows/x86_64/libonnxruntime*.dll ${PYTHON_DIR}/src/moonshine_voice/
 else
@@ -43,9 +42,6 @@ if [[ "$OSTYPE" == "darwin"* ]]; then
 	else
 		PLAT_NAME="macosx_10_9_x86_64"
 	fi
-elif grep -q "Raspberry Pi" /proc/cpuinfo 2>/dev/null || grep -q "BCM2" /proc/cpuinfo 2>/dev/null; then
-	PLAT_NAME="manylinux_2_17_aarch64"
-	ARCH="aarch64"
 elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
 	ARCH=$(uname -m)
 	if [[ "$ARCH" == "x86_64" ]]; then

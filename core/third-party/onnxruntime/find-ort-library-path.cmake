@@ -23,7 +23,9 @@ elseif(IOS OR MOONSHINE_BUILD_SWIFT)
     endif()
 elseif(APPLE)
     set(ONNXRUNTIME_LIB_PATH "${CMAKE_CURRENT_LIST_DIR}/lib/macos/arm64/libonnxruntime.1.23.2.dylib" CACHE INTERNAL "")
-elseif(LINUX)
+# Note: the LINUX variable only exists in CMake >= 3.25, so test
+# CMAKE_SYSTEM_NAME instead to stay compatible with the 3.22 minimum.
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     if(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
         set(ONNXRUNTIME_LIB_PATH "${CMAKE_CURRENT_LIST_DIR}/lib/linux/aarch64/libonnxruntime.so.1" CACHE INTERNAL "")
     else()

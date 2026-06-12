@@ -57,9 +57,11 @@ Listens for user-defined action phrases, like "Turn on the lights", using semant
 ```bash
 cd core
 mkdir build
+cd build
 cmake ..
 cmake --build .
-./moonshine-cpp-test
+cd ../../test-assets
+LD_LIBRARY_PATH=../core/third-party/onnxruntime/lib/linux/$(uname -m) ../core/build/moonshine-cpp-test
 ```
 
 ### MacOS
